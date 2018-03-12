@@ -1,0 +1,100 @@
+
+参考网址：http://www.radiotap.org/
+
+radiotap帧并没有按照网络序存储，而是采用的小端存储，因此对于linux不需要转换，直接使用指针获取就可以了
+Radiotap帧格式
+  0                   1                   2                   3
+  0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+ +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+ |    version    |      header pad   |	     header length	 |
+ +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+ |   			present（32bit）			 |
+ |               	 					 |
+ +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+version：radiotap的版本号，当前始终为0,占一个字节
+header pad：当前未使用，它的作用仅仅是将属性对齐到字的边界，占一个字节
+header length： radiotap长度，通过它可以直接定位到ieee80211帧开始的位置，占两个字节，单位字节
+present：位掩码，占4字节，32位，它的第31位若未设置那么数据只有31位，如果设置了那么后面还将
+	跟着一个present，如果这个present的第31位设置那么...。
+
+
+radiotap头部结构体定义：
+struct ieee80211_radiotap_header {
+        u_int8_t        it_version;     /* set to 0 */
+        u_int8_t        it_pad;
+        u_int16_t       it_len;         /* entire length */
+        u_int32_t       it_present;     /* fields present */
+} __attribute__((__packed__));
+__attribute__((__packed__))是告诉编译器不要优化对齐
+
+为了简化解析过程：只对第一个present进行解析
+第一个present各位对应的内容如下：
+bit number	field
+0		/TSFT
+1		/Flags
+2		/Rate
+3		/Channel
+4		/FHSS
+5		/Antenna signal
+6		/Antenna noise
+7		/Lock quality
+8		/TX attenuation
+9		/dB TX attenuation
+10		/dBm TX power
+11		/Antenna
+12		/dB antenna signal
+13		/dB antenna noise
+14		/RX flags
+19		/MCS
+20		/A-MPDU status
+21		/VHT
+29		/Radiotap Namespace
+29 + 32*n	/Radiotap Namespace
+30		/Vendor Namespace
+30 + 32*n	/Vendor Namespace
+31		reserved: another bitmap follows
+31 + 32*n	reserved: another bitmap follows
+参考：http://www.radiotap.org/defined-fields
+
+
+因此项目中需要做的有一下几点：
+（1）解析长度位，第三、四个字节，uint16_t
+（2）解析第一个presenet，采用的方法是获取第一个非零位，处理完之后，将该位置零，再获取下一个非零位
+（3）找到数据的起点，根据present解析数据。
+
+
+
+在这个过程中要注意对齐问题：
+每个8,16,32,64长度的数据，必须从8,16,32,64的整数倍位置开始
+参考：
+Radiotap requires that all fields in the radiotap header are aligned to natural boundaries. For radiotap, that means all 8-, 16-, 32-, and 64-bit fields must begin on 8-, 16-, 32-, and 64-bit boundaries, respectively. In this way, generators and parsers can avoid unaligned accesses to radiotap capture fields. Radiotap-compliant generators must insert padding before a capture field to ensure its natural alignment. Radiotap-compliant packet parsers, such as tcpdump(8), expect and skip the padding.
+
+Note: structs are not packed identically on all architectures and compilers. If a radiotap header is created with a packed structure it is important to insert padding bytes manually in order to ensure natural alignment.
+
+For example, if a developer wants to construct a radiotap header as follows:
+
+
+struct rtapdata {
+    uint8_t  antsignal;
+    uint16_t tx_attenuation;
+    uint8_t  flags;
+    uint16_t rx_flags;
+} __attribute__ ((packed));
+This would cause the fields tx_attenuation and rx_flags to be potentially unnaturally aligned. Because the radiotap data fields are in a strict order with a fixed length, it is not always possible to get the alignment to fall on an natural boundary using only the radiotap data fields. Therefore, it is sometimes necessary to pad these fields. In this example, you would insert padding like this:
+
+
+struct rtapdata {
+    uint8_t  antsignal;
+    uint8_t  pad_for_tx_attentuation; // <-- added
+    uint16_t tx_attenuation;
+    uint8_t  flags;
+    uint8_t  pad_for_rx_flags;        // <-- added
+    uint16_t rx_flags;
+} __attribute__ ((packed));
+One thing that can be confusing is the fact that there is some radiotap data that consists of multiple fields. For example the Channel field consists of two 16-bit quantities and both of them require 16-bit alignment, although the Channel data consists of 32 bits in total.
+
+
+
+
+
+
